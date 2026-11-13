@@ -47,14 +47,18 @@ const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 // TODO: const askBtn = ...
 // TODO: const guideResponseEl = ...
 // TODO: askBtn.addEventListener(...)
+const questionInput = document.getElementById("questionInput");
+const askBtn = document.getElementById("askBtn");
+const guideResponseEl = document.getElementById("guideResponse");
 
+askBtn.addEventListener("click", askFieldGuide);
 
 /* ============================================================
    STEP 2 (part 1): Create a variable to remember the country.
    Start it as null (nothing explored yet).
    ============================================================ */
 // TODO: let currentCountry = ...
-
+let currentCountry = null;
 
 // --- Part 1: connect the Explore button (already done) --------
 searchBtn.addEventListener("click", fetchCountry);
@@ -66,7 +70,7 @@ async function fetchCountry() {
   showLoading();
 
   try {
-    const API_KEY = ""; // REST Countries v5 key (same as Part 1)
+    const API_KEY = "rc_live_01694549e599442ba7b39f4de6b23f11"; // REST Countries v5 key (same as Part 1)
     const url =
       `https://api.restcountries.com/countries/v5?q=${encodeURIComponent(countryName)}` +
       `&response_fields=names.common,capitals,region,population,languages,flag.url_png,flag.description`;
@@ -109,7 +113,11 @@ async function fetchCountry() {
        3. Remove the "hidden" class from fieldGuideEl
        ---------------------------------------------------------- */
     // TODO
-
+    currentCountry = country;
+    guideCountryNameEl.textContent = country.names.common;
+    guideCountryNameEl.textContent = `Ask me anything about ${country.names.common}.`;
+    guideResponseEl.className = "guide-response";
+    fieldGuideEl.classList.remove("hidden");
 
   } catch (error) {
     hideLoading();
@@ -132,58 +140,89 @@ async function fetchCountry() {
      and return
    ============================================================ */
 async function askFieldGuide() {
+  const question = questionInput.value.trim();
+
+  if (!currentCountry) {
+    guideResponseEl.textContent = "Explore a country first, then ask your question!";
+    return;
+  }
+
+  if (!question) {
+    guideResponseEl.textContent = "Type a question first.";
+    return;
+  }
   // TODO: read and validate the question
+   const systemPrompt = buildSystemPrompt(currentCountry);
 
+  // STEP 8: add the new question to the running conversation
+  conversation.push({ role: "user", content: question });
 
-  /* ----------------------------------------------------------
-     STEP 4: Build the messages array.
-     ----------------------------------------------------------
-     AI chat APIs expect an array of { role, content } objects:
-       - role "system" -> the rules. Use buildSystemPrompt(currentCountry)
-       - role "user"   -> the visitor's question
-     ---------------------------------------------------------- */
-  // TODO: const messages = [ ... ];
-
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...conversation,
+  ];
 
   /* ----------------------------------------------------------
-     STEP 6 (part 1): Loading state.
-     Show "Consulting the field notes..." in guideResponseEl
-     BEFORE you send the request.
+     STEP 6 (part 1): loading state — show "Thinking..."
+     and disable the button so it can't be double-clicked.
      ---------------------------------------------------------- */
-  // TODO
+  guideResponseEl.textContent = "Consulting the field notes...";
+  guideResponseEl.className = "guide-response thinking";
+  askBtn.disabled = true;
 
+  // STEP 10: show the question as a bubble right away
+  addBubble("user", question);
+  questionInput.value = "";
 
   /* ----------------------------------------------------------
-     STEP 6 (part 2): Wrap Step 5 in try { } catch (error) { }
-     In the catch, show a friendly error in guideResponseEl
-     and console.error the real error.
+     STEP 6 (part 2): wrap the request in try/catch
      ---------------------------------------------------------- */
+  try {
+    /* --------------------------------------------------------
+       STEP 5: Send the POST request, parse, and display.
+       -------------------------------------------------------- */
+        const response = await fetch(OPENAI_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({ model: "gpt-4o", messages: messages }),
+    });
 
-  /* ----------------------------------------------------------
-     STEP 5: Send the POST request, parse, and display.
-     ----------------------------------------------------------
-          const response = await fetch(OPENAI_URL, {
-       method: ...,                                  // "POST"
-       headers: {
-         "Content-Type": "application/json",
-         Authorization: `Bearer ${OPENAI_API_KEY}`
-       },
-       body: JSON.stringify({ model: "gpt-4o", messages: messages })
-     });
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`);
+    }
 
-     - If !response.ok, throw a new Error
-     - Convert the response with await response.json()
-     - console.log it and look at the shape!
-     - The AI's text lives at: data.choices[0].message.content
-     - Put that text into guideResponseEl.textContent
-     ---------------------------------------------------------- */
-  // TODO
+    const data = await response.json();
+    console.log("Raw AI response:", data); // inspect the shape!
 
+    const reply = data.choices[0].message.content;
+
+    // STEP 8: remember what the AI said
+    conversation.push({ role: "assistant", content: reply });
+
+    // STEP 10: answer goes into a chat bubble; the status box resets.
+    // (Core version, Step 5: guideResponseEl.textContent = reply;)
+    addBubble("assistant", reply);
+    guideResponseEl.textContent = "Ask a follow-up question.";
+    guideResponseEl.className = "guide-response";
+  } catch (error) {
+    console.error(error);
+    // Remove the unanswered question so history stays in sync
+    conversation.pop();
+    guideResponseEl.textContent =
+      "The Field Guide couldn't answer right now. Please try again in a moment.";
+    guideResponseEl.className = "guide-response guide-error";
+  } finally {
+    askBtn.disabled = false;
+  }
 }
 
 /* ============================================================
-   STEP 4 (helper — already built): the system prompt.
-   Read it! This is where the AI gets its rules and facts.
+   STEP 4 (helper) + STEP 7: the system prompt.
+   Grounding: the country facts from Part 1 go in here.
+   Guardrails: the client's four requirements go in here.
    ============================================================ */
 function buildSystemPrompt(country) {
   const facts = [
@@ -199,35 +238,40 @@ function buildSystemPrompt(country) {
 Here are verified facts about the country the visitor is exploring:
 ${facts}
 
-Only answer questions about ${country.names.common}. Keep answers short, warm and family-friendly.`;
+Rules:
+1. Only answer questions about ${country.names.common}: its geography, wildlife, culture, food, history, landmarks and people.
+2. If the visitor asks about something unrelated, politely steer them back to ${country.names.common}.
+3. Sound like National Geographic: curious, warm and family-friendly.
+4. Keep every answer under 100 words.
+5. Use the verified facts above when they are relevant. If you are not sure about something, say so instead of guessing.`;
 }
 
 /* ============================================================
-   STRETCH GOALS (Steps 7-10)
-   ------------------------------------------------------------
-   STEP 7: Tighten the guardrails in buildSystemPrompt().
-     Add rules for: staying on topic (and steering back politely),
-     the Nat Geo voice, a 100-word limit, and saying "I'm not
-     sure" instead of guessing. Test it with an off-topic question.
-
-   STEP 8: Give the Field Guide a memory.
-     Create a `conversation` array. Push each user question and
-     each AI reply ({ role: "assistant", content: reply }) into it,
-     and send [system, ...conversation] as your messages.
-     Reset it when a new country is explored.
-
-   STEP 9: Make the suggestion chips work.
-     Add ONE click listener on #suggestions. When a .chip is
-     clicked, put its data-question into the input and call
-     askFieldGuide().
-
-   STEP 10: Show the conversation as chat bubbles.
-     Write addBubble(role, text) that creates a div with the
-     classes "bubble user" or "bubble assistant", sets its
-     textContent, and appends it to #chatLog.
+   STRETCH — STEP 9: suggested question chips.
+   Event delegation: one listener on the container
+   handles every chip button inside it.
    ============================================================ */
+suggestionsEl.addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip) return;
+  questionInput.value = chip.dataset.question;
+  askFieldGuide();
+});
 
-// --- Part 1 helpers (already done) -----------------------------
+/* ============================================================
+   STRETCH — STEP 10: chat bubbles.
+   textContent (not innerHTML) keeps AI text from being
+   treated as HTML. Always treat AI output as untrusted.
+   ============================================================ */
+function addBubble(role, text) {
+  const bubble = document.createElement("div");
+  bubble.className = `bubble ${role}`;
+  bubble.textContent = text;
+  chatLogEl.appendChild(bubble);
+  bubble.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// --- Part 1 helpers --------------------------------------------
 function showLoading() {
   loadingEl.classList.remove("hidden");
   errorEl.classList.add("hidden");
